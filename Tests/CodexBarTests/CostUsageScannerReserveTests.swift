@@ -44,8 +44,13 @@ struct CostUsageScannerReserveTests {
         let path = try #require(cache.files.keys.first)
         var file = try #require(cache.files[path])
         file.codexRows = [CostUsageScanner.CodexUsageRow(
-            day: dayKey, model: "gpt-reserve", turnID: nil, eventIndex: 0,
-            input: 100_000, cached: 40000, output: 10000)]
+            day: dayKey,
+            model: "gpt-reserve",
+            turnID: nil,
+            eventIndex: 0,
+            input: 100_000,
+            cached: 40000,
+            output: 10000)]
         file.codexCostNanos = nil
         file.codexStandardCostNanos = nil
         file.codexPriorityCostNanos = nil
