@@ -210,6 +210,8 @@ is limited, using additional rows when needed.
     - `~/.pi/agent/sessions/**/*.jsonl`
     - `~/.omp/agent/sessions/**/*.jsonl`
 - Scanner:
+  - Codex reserve telemetry uses the bundled GPT-5.6 Luna list-price estimate, including existing cached token rows.
+    This estimates API-equivalent cost; it is not a charge for using a subscription reserve allowance.
   - Bundled `gpt-6-astra` pricing covers input, cache reads/writes, output, and the full-request long-context
     threshold above 272K input tokens. Astra Fast pricing is twice the applicable Standard rates when
     existing priority-request evidence selects that mode. Stored token rows are repriced without a history rebuild.
