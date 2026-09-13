@@ -199,4 +199,121 @@ struct CostUsageCodexRowDedupTests {
         #expect(report.data.first?.costUSD != nil)
         #expect(report.summary?.totalCostUSD != nil)
     }
+
+    @Test
+    func `repaired rows persist even when the unchanged-content shortcut applies`() async throws {
+        let environment = try CostUsageTestEnvironment()
+        defer { environment.cleanup() }
+        let day = try environment.makeLocalNoon(year: 2026, month: 9, day: 13)
+        let range = CostUsageScanner.CostUsageDayRange(since: day, until: day)
+        let path = environment.codexSessionsRoot.appendingPathComponent("session.jsonl").path
+        let persisted = [
+            self.row(day: range.sinceKey, eventIndex: 0, timestampUnixMs: 1000, input: 500, cached: 400, output: 50),
+            self.row(day: range.sinceKey, eventIndex: 4, timestampUnixMs: 1000, input: 500, cached: 400, output: 50),
+            self.row(day: range.sinceKey, eventIndex: 1, timestampUnixMs: 2000, input: 1000, cached: 800, output: 100),
+            self.row(day: range.sinceKey, eventIndex: 7, timestampUnixMs: 2000, input: 1000, cached: 800, output: 100),
+        ]
+        var cache = Self.dedupSeedCache(
+            path: path,
+            rows: persisted,
+            days: [range.sinceKey: ["gpt-6-astra": [1500, 1200, 150]]],
+            range: range)
+        _ = CostUsageStoreAccess.replace(cacheRoot: environment.cacheRoot, cache: cache, calendar: range.calendar)
+
+        let loaded = CostUsageStoreAccess.load(cacheRoot: environment.cacheRoot, calendar: range.calendar)
+        defer { loaded.release() }
+        #expect(loaded.cache.files[path]?.codexRows?.count == 2)
+
+        // Without repair tracking the healed cache compares equal to the decoded baseline and
+        // the save is skipped, leaving the duplicated persisted rows in place forever.
+        cache = loaded.cache
+        _ = CostUsageStoreAccess.save(
+            store: loaded.store,
+            cache: cache,
+            calendar: range.calendar,
+            requestedScanWindow: (sinceKey: range.sinceKey, untilKey: range.untilKey),
+            skipIdenticalContent: true,
+            receipt: loaded.receipt)
+
+        let stored = await loaded.store.fetchUsageRows(path: path)
+        #expect(stored.count == 2)
+    }
+
+    @Test
+    func `rows appended after a repair survive save and reload`() async throws {
+        let environment = try CostUsageTestEnvironment()
+        defer { environment.cleanup() }
+        let day = try environment.makeLocalNoon(year: 2026, month: 9, day: 13)
+        let range = CostUsageScanner.CostUsageDayRange(since: day, until: day)
+        let path = environment.codexSessionsRoot.appendingPathComponent("session.jsonl").path
+        let persisted = [
+            self.row(day: range.sinceKey, eventIndex: 0, timestampUnixMs: 1000, input: 500, cached: 400, output: 50),
+            self.row(day: range.sinceKey, eventIndex: 4, timestampUnixMs: 1000, input: 500, cached: 400, output: 50),
+            self.row(day: range.sinceKey, eventIndex: 1, timestampUnixMs: 2000, input: 1000, cached: 800, output: 100),
+            self.row(day: range.sinceKey, eventIndex: 7, timestampUnixMs: 2000, input: 1000, cached: 800, output: 100),
+        ]
+        let cache = Self.dedupSeedCache(
+            path: path,
+            rows: persisted,
+            days: [range.sinceKey: ["gpt-6-astra": [1500, 1200, 150]]],
+            range: range)
+        _ = CostUsageStoreAccess.replace(cacheRoot: environment.cacheRoot, cache: cache, calendar: range.calendar)
+
+        let loaded = CostUsageStoreAccess.load(cacheRoot: environment.cacheRoot, calendar: range.calendar)
+        defer { loaded.release() }
+        var usage = try #require(loaded.cache.files[path])
+        #expect(usage.codexRows?.count == 2)
+
+        // Simulate an incremental scan: the file grew and two distinct new events arrived.
+        // Without repair tracking the persistence planner would still see the pre-repair row
+        // count (4) and choose .append(startingAt: 4), silently dropping both new rows.
+        var rows = usage.codexRows ?? []
+        rows.append(self.row(
+            day: range.sinceKey, eventIndex: 2, timestampUnixMs: 3000, input: 300, cached: 200, output: 30))
+        rows.append(self.row(
+            day: range.sinceKey, eventIndex: 3, timestampUnixMs: 4000, input: 200, cached: 100, output: 20))
+        usage.codexRows = rows
+        usage.days = [range.sinceKey: ["gpt-6-astra": [2000, 1500, 200]]]
+        usage.parsedBytes = (usage.parsedBytes ?? 0) + 50
+        usage.size += 50
+        var appended = loaded.cache
+        appended.files[path] = usage
+        appended.days = usage.days
+        _ = CostUsageStoreAccess.save(
+            store: loaded.store,
+            cache: appended,
+            calendar: range.calendar,
+            requestedScanWindow: (sinceKey: range.sinceKey, untilKey: range.untilKey),
+            skipIdenticalContent: true,
+            receipt: loaded.receipt)
+
+        let stored = await loaded.store.fetchUsageRows(path: path)
+        #expect(stored.count == 4)
+
+        let reread = CostUsageStoreAccess.read(cacheRoot: environment.cacheRoot, calendar: range.calendar)
+        let rereadRows = try #require(reread.files[path]?.codexRows)
+        #expect(Set(rereadRows.compactMap(\.timestampUnixMs)) == [1000, 2000, 3000, 4000])
+    }
+
+    private static func dedupSeedCache(
+        path: String,
+        rows: [CostUsageScanner.CodexUsageRow],
+        days: [String: [String: [Int]]],
+        range: CostUsageScanner.CostUsageDayRange) -> CostUsageCache
+    {
+        let usage = CostUsageScanner.makeFileUsage(
+            mtimeUnixMs: 1,
+            size: 1,
+            days: days,
+            parsedBytes: 1,
+            codexRows: rows,
+            codexScanComplete: true)
+        var cache = CostUsageCache()
+        cache.files[path] = usage
+        cache.days = days
+        cache.scanSinceKey = range.sinceKey
+        cache.scanUntilKey = range.untilKey
+        cache.timeZoneIdentifier = range.calendar.timeZone.identifier
+        return cache
+    }
 }
