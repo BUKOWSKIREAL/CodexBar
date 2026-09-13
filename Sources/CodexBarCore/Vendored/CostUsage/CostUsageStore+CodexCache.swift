@@ -479,7 +479,14 @@ extension CostUsageStore {
             let rows = (rowsByPath[file.path] ?? []).compactMap {
                 try? JSONDecoder().decode(CostUsageScanner.CodexUsageRow.self, from: $0.payload)
             }
-            let restoredRows = rows.isEmpty ? Self.aggregateRows(from: aggregates) : rows
+            let days = Self.days(from: aggregates)
+            // Persisted rows can accumulate re-emitted copies of one token event (the same
+            // event content under fresh per-scan event indexes). Canonical packed totals are
+            // tracked separately, so the copies survive reconciliation only by failing it;
+            // drop them on load where the file's own `days` prove they are redundant.
+            let restoredRows = rows.isEmpty
+                ? Self.aggregateRows(from: aggregates)
+                : CostUsageScanner.deduplicatedCodexUsageRows(rows, canonicalDays: days)
             if details.hasTokenSnapshots, !tokenSnapshotsLoaded {
                 unloadedTokenSnapshotPathRecorder?(file.path)
             }
@@ -490,7 +497,7 @@ extension CostUsageStore {
             let usage = CostUsageFileUsage(
                 mtimeUnixMs: file.mtimeUnixMs,
                 size: file.size,
-                days: Self.days(from: aggregates),
+                days: days,
                 parsedBytes: file.parsedBytes,
                 lastModel: file.scanState.lastModel,
                 lastTotals: details.lastTotals,
