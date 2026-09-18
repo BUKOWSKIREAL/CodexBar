@@ -17,7 +17,13 @@ extension CostUsageScanner {
     }
 
     static func codexCanonicalPricingRows(_ usage: CostUsageFileUsage) -> CodexCanonicalPricingRows {
-        let persistedRows = usage.codexRows ?? []
+        // Re-emitted copies of one token event only differ in positional bookkeeping
+        // (`eventIndex`); the canonical packed totals they are reconciled against count the
+        // event once. Drop copies whose removal lands exactly on those totals so the
+        // comparison is event-for-event.
+        let persistedRows = Self.deduplicatedCodexUsageRows(
+            usage.codexRows ?? [],
+            canonicalDays: usage.days)
         let rowsByGroup = Dictionary(grouping: persistedRows) {
             CodexDayModelKey(day: $0.day, model: $0.model)
         }
@@ -137,6 +143,103 @@ extension CostUsageScanner {
                 pricingResolver: pricingResolver)
             return breakdown.hasIncompletePricing ? group : nil
         })
+    }
+
+    private struct CodexUsageRowEventKey: Hashable {
+        let turnID: String?
+        let rawModel: String?
+        let timestampUnixMs: Int64?
+        let input: Int
+        let cached: Int
+        let output: Int
+        let reasoning: Int?
+        let unpricedTokens: Int?
+
+        init(_ row: CodexUsageRow) {
+            self.turnID = row.turnID
+            self.rawModel = row.rawModel
+            self.timestampUnixMs = row.timestampUnixMs
+            self.input = row.input
+            self.cached = row.cached
+            self.output = row.output
+            self.reasoning = row.reasoning
+            self.unpricedTokens = row.unpricedTokens
+        }
+    }
+
+    /// Drops re-emitted copies of token events, but only where a copy is provably
+    /// redundant: a (day, model) group is deduplicated only when its rows exceed the
+    /// file's canonical packed totals and the deduplicated rows sum to them exactly.
+    /// Distinct events that happen to share content are already counted by the
+    /// canonical totals, so removing a copy would undershoot and the group stays
+    /// verbatim. Groups without canonical totals, or that cannot be reconciled
+    /// exactly, are left untouched for fail-closed reconciliation to report.
+    static func deduplicatedCodexUsageRows(
+        _ rows: [CodexUsageRow],
+        canonicalDays: [String: [String: [Int]]]) -> [CodexUsageRow]
+    {
+        var groupOrder: [CodexDayModelKey] = []
+        var indicesByGroup: [CodexDayModelKey: [Int]] = [:]
+        for (index, row) in rows.enumerated() {
+            let key = CodexDayModelKey(day: row.day, model: row.model)
+            if indicesByGroup[key] == nil { groupOrder.append(key) }
+            indicesByGroup[key, default: []].append(index)
+        }
+        var dropped = Set<Int>()
+        for key in groupOrder {
+            guard let packed = canonicalDays[key.day]?[key.model],
+                  let indices = indicesByGroup[key]
+            else { continue }
+            let target = CodexRowTokenTotals(
+                input: max(0, packed[safe: 0] ?? 0),
+                cached: max(0, packed[safe: 1] ?? 0),
+                output: max(0, packed[safe: 2] ?? 0))
+            var sum = CodexRowTokenTotals()
+            guard indices.allSatisfy({ sum.add(rows[$0]) }), sum.exceeds(target) else { continue }
+
+            var bestByEvent: [CodexUsageRowEventKey: Int] = [:]
+            var kept = Set<Int>()
+            for index in indices {
+                let row = rows[index]
+                // Token equality cannot establish whether zero-token charges are duplicates.
+                guard row.input > 0 || row.cached > 0 || row.output > 0 else {
+                    kept.insert(index)
+                    continue
+                }
+                let eventKey = CodexUsageRowEventKey(row)
+                guard let existing = bestByEvent[eventKey] else {
+                    bestByEvent[eventKey] = index
+                    continue
+                }
+                if Self.preferredCodexUsageRow(rows[index], over: rows[existing]) {
+                    bestByEvent[eventKey] = index
+                }
+            }
+            kept.formUnion(bestByEvent.values)
+            var deduplicatedSum = CodexRowTokenTotals()
+            guard kept.count < indices.count,
+                  kept.allSatisfy({ deduplicatedSum.add(rows[$0]) }),
+                  deduplicatedSum == target
+            else { continue }
+            dropped.formUnion(indices.filter { !kept.contains($0) })
+        }
+        guard !dropped.isEmpty else { return rows }
+        return rows.enumerated().compactMap { dropped.contains($0.offset) ? nil : $0.element }
+    }
+
+    private static func preferredCodexUsageRow(_ candidate: CodexUsageRow, over existing: CodexUsageRow) -> Bool {
+        func pricingRank(_ row: CodexUsageRow) -> Int {
+            (row.knownCostNanos != nil ? 8 : 0)
+                + (row.pricingMode == "priority" ? 4 : 0)
+                + (row.pricingModel != nil ? 2 : 0)
+                + (row.pricingMode != nil ? 1 : 0)
+        }
+        let candidateRank = pricingRank(candidate)
+        let existingRank = pricingRank(existing)
+        if candidateRank != existingRank {
+            return candidateRank > existingRank
+        }
+        return (candidate.eventIndex ?? -1) > (existing.eventIndex ?? -1)
     }
 
     private struct CodexRowTokenTotals: Equatable {

@@ -270,6 +270,10 @@ and stable account numbers distinguish rows while usable workspace labels remain
     remains transient. Scanner and writer connections keep separate ownership.
   - Saved day/model aggregates group each file's usage rows in one pass per aggregate build. Packed token totals,
     authoritative costs (including zero), and standard/priority estimation buckets retain their existing meanings.
+  - Re-emitted usage rows are repaired only when removing copies exactly reconciles all token classes with the
+    file's canonical totals. Repairs retain observed priority pricing, unpriced markers, and separate zero-token
+    charges; the next save persists the repaired rows without dropping newly scanned events. Unexplained totals
+    remain incomplete rather than publishing a guessed cost.
   - Fully read empty session fragments retain completion records even when another file contributes the same session.
     They contribute no usage and reparse from the start if they grow. Usage-bearing duplicates and incomplete fragments
     keep their existing accounting and retry rules. Existing 0.56.4 cost caches are adopted without rebuilding

@@ -122,11 +122,13 @@ extension CostUsageStore {
                 || snapshot.metadata.timeZoneIdentifier == calendar.timeZone.identifier
             else { return CostUsageStoreReadView(cache: CostUsageCache(), purpose: purpose) }
             // Identity/anchor reconciliation touches the filesystem; do not pin a SQLite reader during it.
+            var repairedRowPaths: Set<String> = []
             let decoded = Self.decodeCodexCache(
                 from: snapshot,
                 recorder: recorder,
-                retryPresence: retryPresence)
-            let persistence = CodexPersistenceState(snapshot: snapshot)
+                retryPresence: retryPresence,
+                repairedRowPathRecorder: { repairedRowPaths.insert($0) })
+            let persistence = CodexPersistenceState(snapshot: snapshot, repairedRowPaths: repairedRowPaths)
             // Activity is a superset of status and becomes the one bounded warm read state.
             // Detailed reports keep their larger event history transient.
             if purpose != .report {
@@ -283,6 +285,9 @@ extension CostUsageStore {
         cache: CostUsageCache,
         calendar: Calendar) -> Bool
     {
+        // A file repaired during decode differs from its persisted row set; the repair must
+        // reach the disk instead of taking the unchanged-content shortcut.
+        guard baseline.persistence.repairedRowPaths.isEmpty else { return false }
         var restored = Self.reconciledCodexCache(baseline.decoded, persistence: baseline.persistence)
         guard restored.timeZoneIdentifier == nil
             || restored.timeZoneIdentifier == calendar.timeZone.identifier
@@ -433,13 +438,15 @@ extension CostUsageStore {
         retryPresence: [String: CostUsageCodexRetryBufferPresence]? = nil,
         tokenSnapshotsLoaded: Bool = true) -> CostUsageCache
     {
-        self.reconciledCodexCache(
+        var repairedRowPaths: Set<String> = []
+        return self.reconciledCodexCache(
             self.decodeCodexCache(
                 from: snapshot,
                 recorder: recorder,
                 retryPresence: retryPresence,
-                tokenSnapshotsLoaded: tokenSnapshotsLoaded),
-            persistence: CodexPersistenceState(snapshot: snapshot))
+                tokenSnapshotsLoaded: tokenSnapshotsLoaded,
+                repairedRowPathRecorder: { repairedRowPaths.insert($0) }),
+            persistence: CodexPersistenceState(snapshot: snapshot, repairedRowPaths: repairedRowPaths))
     }
 
     static func decodeCodexCache(
@@ -447,7 +454,8 @@ extension CostUsageStore {
         recorder: CostUsageStoreReadWorkRecorder?,
         retryPresence: [String: CostUsageCodexRetryBufferPresence]? = nil,
         tokenSnapshotsLoaded: Bool = true,
-        unloadedTokenSnapshotPathRecorder: ((String) -> Void)? = nil) -> CostUsageCache
+        unloadedTokenSnapshotPathRecorder: ((String) -> Void)? = nil,
+        repairedRowPathRecorder: ((String) -> Void)? = nil) -> CostUsageCache
     {
         recorder?.recordCacheConversion()
         var cache = CostUsageCache()
@@ -496,7 +504,17 @@ extension CostUsageStore {
             let rows = (rowsByPath[file.path] ?? []).compactMap {
                 try? JSONDecoder().decode(CostUsageScanner.CodexUsageRow.self, from: $0.payload)
             }
-            let restoredRows = rows.isEmpty ? Self.aggregateRows(from: aggregates) : rows
+            let days = Self.days(from: aggregates)
+            // Persisted rows can accumulate re-emitted copies of one token event (the same
+            // event content under fresh per-scan event indexes). Canonical packed totals are
+            // tracked separately, so the copies survive reconciliation only by failing it;
+            // drop them on load where the file's own `days` prove they are redundant.
+            let restoredRows = rows.isEmpty
+                ? Self.aggregateRows(from: aggregates)
+                : CostUsageScanner.deduplicatedCodexUsageRows(rows, canonicalDays: days)
+            if !rows.isEmpty, restoredRows.count != rows.count {
+                repairedRowPathRecorder?(file.path)
+            }
             if details.hasTokenSnapshots, !tokenSnapshotsLoaded {
                 unloadedTokenSnapshotPathRecorder?(file.path)
             }
@@ -507,7 +525,7 @@ extension CostUsageStore {
             let usage = CostUsageFileUsage(
                 mtimeUnixMs: file.mtimeUnixMs,
                 size: file.size,
-                days: Self.days(from: aggregates),
+                days: days,
                 parsedBytes: file.parsedBytes,
                 lastModel: file.scanState.lastModel,
                 lastTotals: details.lastTotals,
