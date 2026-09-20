@@ -38,12 +38,17 @@ public enum StepFunProviderDescriptor {
     /// (`StepFunUsageSnapshot.toUsageSnapshot`), and those accounts carry no 5h/weekly
     /// windows — the credit lane gets a "Credit" label; Coding Plan keeps the
     /// metadata's "5h Window" session label.
+    ///
+    /// The credit lane is identified structurally rather than by reset time: the
+    /// rate-window path always emits a weekly secondary window, so a populated
+    /// primary with no secondary is the credit lane even when the payload has no
+    /// reset timestamp (top-up-only balances) and therefore no monthly pace
+    /// sentinel on `windowMinutes`.
     public static func rateWindowLabels(
         metadata: ProviderMetadata,
         snapshot: UsageSnapshot) -> ProviderRateWindowLabels
     {
-        let isCreditPlan = snapshot.secondary == nil
-            && snapshot.primary?.windowMinutes == ProviderPaceCapability.monthlyWindowSentinelMinutes
+        let isCreditPlan = snapshot.secondary == nil && snapshot.primary != nil
         return ProviderRateWindowLabels(
             primary: isCreditPlan ? "Credit" : metadata.sessionLabel,
             secondary: metadata.weeklyLabel,
