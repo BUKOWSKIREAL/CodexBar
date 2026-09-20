@@ -273,6 +273,9 @@ struct StepFunUsageFetcherParsingTests {
 
         #expect(snapshot.creditResetTime == nil)
         #expect(usage.primary?.windowMinutes == nil)
+        #expect(usage.primary?.resetsAt == nil)
+        #expect(usage.primary?.resetDescription == nil)
+        #expect(Self.primaryLabel(for: usage) == "Credit")
     }
 
     @Test
@@ -377,6 +380,7 @@ struct StepFunUsageFetcherParsingTests {
         #expect(usage.secondary == nil)
         #expect(usage.identity?.providerID == .stepfun)
         #expect(usage.updatedAt == creditSnapshot.updatedAt)
+        #expect(Self.primaryLabel(for: usage) == "5h Window")
         #expect(try StepFunUsageFetcher._parseSnapshotForTesting(Data(windowFamily.utf8)).isCreditPlan == false)
     }
 
@@ -402,6 +406,7 @@ struct StepFunUsageFetcherParsingTests {
         let usage = snapshot.toUsageSnapshot()
         #expect(usage.primary?.usedPercent == 100)
         #expect(usage.secondary == nil)
+        #expect(Self.primaryLabel(for: usage) == "Credit")
     }
 
     @Test
@@ -425,6 +430,10 @@ struct StepFunUsageFetcherParsingTests {
         let usage = snapshot.toUsageSnapshot()
         #expect(usage.primary?.usedPercent == 100)
         #expect(usage.secondary == nil)
+        #expect(usage.primary?.windowMinutes == nil)
+        #expect(usage.primary?.resetsAt == nil)
+        #expect(usage.primary?.resetDescription == nil)
+        #expect(Self.primaryLabel(for: usage) == "Credit")
     }
 
     @Test
@@ -449,6 +458,8 @@ struct StepFunUsageFetcherParsingTests {
         // (80 + 150) / (100 + 300) = 0.575 remaining, or 42.5% used.
         #expect(snapshot.creditLeftRate == 0.575)
         #expect(abs((snapshot.toUsageSnapshot().primary?.usedPercent ?? 0) - 42.5) < 0.0001)
+        #expect(snapshot.toUsageSnapshot().primary?.windowMinutes == nil)
+        #expect(Self.primaryLabel(for: snapshot.toUsageSnapshot()) == "Credit")
     }
 
     @Test
@@ -526,10 +537,7 @@ struct StepFunUsageFetcherParsingTests {
         #expect(snapshot.isCreditPlan == true)
 
         let usage = snapshot.toUsageSnapshot()
-        let metadata = StepFunProviderDescriptor.makeDescriptor().metadata
-        let labels = StepFunProviderDescriptor.rateWindowLabels(metadata: metadata, snapshot: usage)
-
-        #expect(labels.primary == "Credit")
+        #expect(Self.primaryLabel(for: usage) == "Credit")
     }
 
     @Test
@@ -550,10 +558,12 @@ struct StepFunUsageFetcherParsingTests {
         #expect(snapshot.isCreditPlan == false)
 
         let usage = snapshot.toUsageSnapshot()
-        let metadata = StepFunProviderDescriptor.makeDescriptor().metadata
-        let labels = StepFunProviderDescriptor.rateWindowLabels(metadata: metadata, snapshot: usage)
+        #expect(Self.primaryLabel(for: usage) == "5h Window")
+    }
 
-        #expect(labels.primary == "5h Window")
+    private static func primaryLabel(for snapshot: UsageSnapshot) -> String {
+        let descriptor = ProviderDescriptorRegistry.descriptor(for: .stepfun)
+        return descriptor.presentation.rateWindowLabels(metadata: descriptor.metadata, snapshot: snapshot).primary
     }
 }
 

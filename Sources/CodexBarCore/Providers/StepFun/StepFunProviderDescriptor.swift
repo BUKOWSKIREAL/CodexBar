@@ -34,16 +34,12 @@ public enum StepFunProviderDescriptor {
         try store.save(config)
     }
 
-    /// Token Plan (credit pool) feeds the credit balance through the primary lane
-    /// (`StepFunUsageSnapshot.toUsageSnapshot`), and those accounts carry no 5h/weekly
-    /// windows — the credit lane gets a "Credit" label; Coding Plan keeps the
-    /// metadata's "5h Window" session label.
+    /// Credit plans populate only the primary lane, including balances without a reset timestamp.
     public static func rateWindowLabels(
         metadata: ProviderMetadata,
         snapshot: UsageSnapshot) -> ProviderRateWindowLabels
     {
-        let isCreditPlan = snapshot.secondary == nil
-            && snapshot.primary?.windowMinutes == ProviderPaceCapability.monthlyWindowSentinelMinutes
+        let isCreditPlan = snapshot.primary != nil && snapshot.secondary == nil
         return ProviderRateWindowLabels(
             primary: isCreditPlan ? "Credit" : metadata.sessionLabel,
             secondary: metadata.weeklyLabel,
