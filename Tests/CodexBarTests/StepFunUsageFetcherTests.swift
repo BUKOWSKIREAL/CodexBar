@@ -493,6 +493,68 @@ struct StepFunUsageFetcherParsingTests {
         #expect(usage.primary?.usedPercent == 50.0)
         #expect(usage.secondary == nil)
     }
+
+    @Test
+    func `credit plan labels the primary lane as Credit`() throws {
+        // Matches a live Token Plan (Plus) account: rate windows are zeroed with
+        // "0" reset times, the real quota is the monthly credit pool.
+        let json = """
+        {
+            "status": 1,
+            "desc": "",
+            "five_hour_usage_left_rate": 0,
+            "five_hour_usage_reset_time": "0",
+            "weekly_usage_left_rate": 0,
+            "weekly_usage_reset_time": "0",
+            "plan_family": 2,
+            "plan_credit_rate_limit": {
+                "subscription_credit_left_rate": 0.9954225,
+                "subscription_credit_reset_time": "1792472633",
+                "topup_credit_left_rate": 0,
+                "credit_buckets": [
+                    {
+                        "type": 1,
+                        "credit_total": "1600000000",
+                        "credit_residual": "1592675954"
+                    }
+                ]
+            }
+        }
+        """
+        let data = Data(json.utf8)
+        let snapshot = try StepFunUsageFetcher._parseSnapshotForTesting(data)
+        #expect(snapshot.isCreditPlan == true)
+
+        let usage = snapshot.toUsageSnapshot()
+        let metadata = StepFunProviderDescriptor.makeDescriptor().metadata
+        let labels = StepFunProviderDescriptor.rateWindowLabels(metadata: metadata, snapshot: usage)
+
+        #expect(labels.primary == "Credit")
+    }
+
+    @Test
+    func `coding plan keeps the 5h Window label`() throws {
+        // Grandfathered Coding Plan: live rolling 5h/weekly windows, no credit pool.
+        let json = """
+        {
+            "status": 1,
+            "desc": "",
+            "five_hour_usage_left_rate": 1,
+            "five_hour_usage_reset_time": "1777528800",
+            "weekly_usage_left_rate": 0.99781543,
+            "weekly_usage_reset_time": "1777899600"
+        }
+        """
+        let data = Data(json.utf8)
+        let snapshot = try StepFunUsageFetcher._parseSnapshotForTesting(data)
+        #expect(snapshot.isCreditPlan == false)
+
+        let usage = snapshot.toUsageSnapshot()
+        let metadata = StepFunProviderDescriptor.makeDescriptor().metadata
+        let labels = StepFunProviderDescriptor.rateWindowLabels(metadata: metadata, snapshot: usage)
+
+        #expect(labels.primary == "5h Window")
+    }
 }
 
 struct StepFunTokenNormalizerTests {

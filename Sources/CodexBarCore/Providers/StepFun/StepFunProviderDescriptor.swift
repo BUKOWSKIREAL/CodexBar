@@ -34,6 +34,23 @@ public enum StepFunProviderDescriptor {
         try store.save(config)
     }
 
+    /// Token Plan (credit pool) feeds the credit balance through the primary lane
+    /// (`StepFunUsageSnapshot.toUsageSnapshot`), and those accounts carry no 5h/weekly
+    /// windows — the credit lane gets a "Credit" label; Coding Plan keeps the
+    /// metadata's "5h Window" session label.
+    public static func rateWindowLabels(
+        metadata: ProviderMetadata,
+        snapshot: UsageSnapshot) -> ProviderRateWindowLabels
+    {
+        let isCreditPlan = snapshot.secondary == nil
+            && snapshot.primary?.windowMinutes == ProviderPaceCapability.monthlyWindowSentinelMinutes
+        return ProviderRateWindowLabels(
+            primary: isCreditPlan ? "Credit" : metadata.sessionLabel,
+            secondary: metadata.weeklyLabel,
+            tertiary: metadata.opusLabel ?? "Sonnet",
+            showsTertiary: metadata.supportsOpus)
+    }
+
     static func makeDescriptor() -> ProviderDescriptor {
         ProviderDescriptor(
             id: .stepfun,
@@ -89,6 +106,9 @@ public enum StepFunProviderDescriptor {
                 noDataMessage: { "StepFun per-day cost history is not available via API." }),
             pace: .calendarMonthResetWindow,
             presentation: ProviderUsagePresentation(
+                rateWindowLabeler: { metadata, snapshot, _ in
+                    Self.rateWindowLabels(metadata: metadata, snapshot: snapshot)
+                },
                 primaryBindingQuotaLanes: [.secondary]),
             fetchPlan: ProviderFetchPlan(
                 sourceModes: [.auto, .web],
